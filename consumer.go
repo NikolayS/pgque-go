@@ -56,16 +56,19 @@ func (c *Consumer) Start(ctx context.Context) error {
 		}
 
 		var batchID int64
+		hasError := false
 		for _, msg := range msgs {
 			batchID = msg.BatchID
 			if handler, ok := c.handlers[msg.Type]; ok {
 				if err := handler(ctx, msg); err != nil {
 					log.Printf("pgque: handler error for %s: %v", msg.Type, err)
+					hasError = true
+					// Don't ack — batch will be redelivered
 				}
 			}
 		}
 
-		if batchID != 0 {
+		if batchID != 0 && !hasError {
 			if err := c.client.Ack(ctx, batchID); err != nil {
 				log.Printf("pgque: ack error: %v", err)
 			}
