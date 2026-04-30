@@ -42,11 +42,16 @@ func TestRace_ConcurrentSend(t *testing.T) {
 		}(g)
 	}
 	wg.Wait()
-	tick(t, client)
+	tick(t, client, queue)
 
+	expected := goroutines * perGoroutine
+	// pgque.receive truncates yielded rows at i_max_return, but Ack
+	// finishes the entire batch — events past the cap are not yielded
+	// again without a fresh tick. Size the cap above the total so the
+	// whole tick window flows out in one call.
 	total := 0
 	for {
-		msgs, err := client.Receive(ctx, queue, consumer, 100)
+		msgs, err := client.Receive(ctx, queue, consumer, 2*expected)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -58,7 +63,6 @@ func TestRace_ConcurrentSend(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	expected := goroutines * perGoroutine
 	if total != expected {
 		t.Fatalf("expected %d messages received, got %d", expected, total)
 	}
@@ -113,7 +117,7 @@ func TestRace_SendReceiveLoop(t *testing.T) {
 				return
 			default:
 			}
-			if _, err := client.Pool().Exec(ctx, "select pgque.ticker()"); err != nil {
+			if _, err := client.Pool().Exec(ctx, "select pgque.ticker($1)", queue); err != nil {
 				if ctx.Err() != nil {
 					return
 				}
@@ -161,7 +165,7 @@ func TestRace_HandlerNackUnderLoad(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	tick(t, client)
+	tick(t, client, queue)
 
 	rng := rand.New(rand.NewSource(1))
 	var rngMu sync.Mutex
@@ -217,7 +221,7 @@ func TestConcurrent_TwoConsumersDistinctNames(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	tick(t, client)
+	tick(t, client, queue)
 
 	var countA, countB int64
 
