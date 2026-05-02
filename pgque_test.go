@@ -2,8 +2,10 @@ package pgque_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
+	"sort"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -91,6 +93,124 @@ func TestSend(t *testing.T) {
 	}
 	if eid == 0 {
 		t.Fatal("expected non-zero event ID")
+	}
+}
+
+func TestSendBatch(t *testing.T) {
+	ctx := context.Background()
+	client := connectOrSkip(t)
+	defer client.Close()
+	queue, consumer := setupFreshQueue(t, client)
+
+	ids, err := client.SendBatch(ctx, queue, "batch.test", []any{
+		map[string]any{"n": 1},
+		map[string]any{"n": 2},
+		map[string]any{"n": 3},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 3 {
+		t.Fatalf("expected 3 IDs, got %d", len(ids))
+	}
+	if ids[0] >= ids[1] || ids[1] >= ids[2] {
+		t.Fatalf("expected IDs in input order, got %v", ids)
+	}
+
+	tick(t, client, queue)
+	msgs, err := client.Receive(ctx, queue, consumer, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(msgs))
+	}
+	sort.Slice(msgs, func(i, j int) bool { return msgs[i].MsgID < msgs[j].MsgID })
+	for i, msg := range msgs {
+		if msg.Type != "batch.test" {
+			t.Fatalf("expected type batch.test, got %s", msg.Type)
+		}
+		var payload map[string]int
+		if err := json.Unmarshal([]byte(msg.Payload), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["n"] != i+1 {
+			t.Fatalf("expected payload n=%d, got %v", i+1, payload)
+		}
+	}
+}
+
+func TestSendBatchEmptySlice(t *testing.T) {
+	client := connectOrSkip(t)
+	defer client.Close()
+	queue, consumer := setupFreshQueue(t, client)
+	ids, err := client.SendBatch(context.Background(), queue, "batch.empty", []any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("expected no IDs, got %v", ids)
+	}
+	tick(t, client, queue)
+	msgs, err := client.Receive(context.Background(), queue, consumer, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("expected no messages, got %d", len(msgs))
+	}
+}
+
+func TestSendBatchEmptyTypeDefaults(t *testing.T) {
+	client := connectOrSkip(t)
+	defer client.Close()
+	queue, consumer := setupFreshQueue(t, client)
+	if _, err := client.SendBatch(context.Background(), queue, "", []any{map[string]any{"x": 1}}); err != nil {
+		t.Fatal(err)
+	}
+	tick(t, client, queue)
+	msgs, err := client.Receive(context.Background(), queue, consumer, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || msgs[0].Type != "default" {
+		t.Fatalf("expected one default message, got %#v", msgs)
+	}
+}
+
+func TestSendBatchNilPayloadProducesJSONNull(t *testing.T) {
+	client := connectOrSkip(t)
+	defer client.Close()
+	queue, consumer := setupFreshQueue(t, client)
+	if _, err := client.SendBatch(context.Background(), queue, "batch.null", []any{nil}); err != nil {
+		t.Fatal(err)
+	}
+	tick(t, client, queue)
+	msgs, err := client.Receive(context.Background(), queue, consumer, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || msgs[0].Payload != "null" {
+		t.Fatalf("expected JSON null payload, got %#v", msgs)
+	}
+}
+
+func TestSendBatchMissingQueue(t *testing.T) {
+	client := connectOrSkip(t)
+	defer client.Close()
+	_, err := client.SendBatch(context.Background(), "missing_"+randSuffix(t), "x", []any{map[string]any{"x": 1}})
+	if err == nil {
+		t.Fatal("expected missing queue error")
+	}
+}
+
+func TestSendBatchUnmarshalablePayload(t *testing.T) {
+	client := connectOrSkip(t)
+	defer client.Close()
+	queue, _ := setupFreshQueue(t, client)
+	_, err := client.SendBatch(context.Background(), queue, "x", []any{make(chan int)})
+	if err == nil {
+		t.Fatal("expected marshal error")
 	}
 }
 
